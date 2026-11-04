@@ -33,7 +33,8 @@ Dungeon features
     entrances
     subquests
     curses
-    Premade 
+    Premade dungeons
+
 Pocket Universe features
     stellar bodies
     planets
@@ -44,20 +45,34 @@ Pocket Universe features
         nebulea
 
     physics
+        gravitation
+        radiation
+        magnetic field
+
     debris
         technology
             space ships
             space stations
             artificial worlds
+            mining vessels
+
         resources 
             asteroid
             comet
-Magic trees
+
+    Enemies
+        Feral soveriegns
+        Crystal life forms
+        Greys
+        Space whales
+        Space lice
+   
 Mana types
     Color
     Skill trees
     Magic skill trees
-    Sovereign avatar tree
+
+Sovereign avatar tree
         Soverign avatar
         apostles
         preists
@@ -72,7 +87,14 @@ Mana types
         hero trees
     Dungeons types
 
-    
+ Skills
+    inate skills - available to all
+    creature skills - available to specfic creatures
+    Player race skills - availbable to specific races
+    Job skills - available to only specific jobs
+    Soveriegn skills - available to only soveriegns
+    Combined skills - avaialbe only to those with the original skills
+    VIP skills - only available to those with the correct status level ( may have other restrictions so this a sub sections in each of the other skills)
 
 
 
