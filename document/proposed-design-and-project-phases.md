@@ -33,20 +33,50 @@ editing. A web application suits this better than Godot: no install for
 creators, stronger form/table/accessibility tooling, faster iteration, and one
 interface shared by creators, reviewers, and admins.
 
-Godot remains valuable where game rules and rendering matter: previewing and
-playtesting submissions, and visual or spatial editors (room/trap layout,
-planet and physics tuning, tree visualization). It is added after the web
-management workflow is working.
+Godot remains valuable where game rules and rendering matter, in two roles:
+
+1. **Headless validation worker (server side, earlier).** The real engine is
+   the only reliable way to check that an asset or effect fits the game's
+   scale, physics, and performance budgets. This runs as a worker, not a
+   client, and is needed before assets or effects are accepted (Phase 5).
+2. **Interactive preview and editors (client side, later).** Previewing
+   content in real game lighting and scale, and visual or spatial editors
+   (room/trap layout, planet and physics tuning, tree visualization),
+   launched from the web app or as a desktop test bed (Phase 7).
 
 | Concern | Delivered by |
 |---|---|
-| Login, registration, name checks, profile, eligibility | Web app |
+| Login, registration, name checks, profile, eligibility, agreements | Web app |
 | Projects, drafts, clone, rename, versions, comments, review queue | Web app |
-| Metrics and income dashboards | Web app |
-| Schema-driven forms for most workshop content | Web app |
-| Preview/playtest of submitted content | Godot (later phase) |
+| Uploads, validation reports, recognition/credit views | Web app |
+| Schema-driven forms for text and effect-data content | Web app |
+| Basic previews (images, glTF models, audio waveform) | Web app (viewer libraries) |
+| Import, scale/physics/performance checks, effect simulation | Godot headless validation worker (server side) |
+| In-context preview/playtest | Godot interactive client (later phase) |
 | Visual/spatial editors | Godot, embedded or launched from the web app (later phase) |
-| Shared content format | Versioned, data-only JSON schemas used by both clients |
+| Shared content format | Versioned schemas used by both clients and the validators |
+
+### Web technology choices (decision D21: Vite, React, TypeScript, and Tailwind decided; the rest proposed)
+
+The studio is an authenticated app with no public, indexable content, so it is
+a static single-page app served by the existing nginx. No Node runtime is
+needed unless token storage moves to a studio-side session cookie (D-series
+decision on token storage); that is the only thing that would add one.
+
+| Concern | Choice | Notes |
+|---|---|---|
+| Framework | React + TypeScript, built with Vite | Vue 3 or SvelteKit (static) are acceptable if the team prefers them |
+| Server data | TanStack Query | Caching, retries, and refresh after signed writes |
+| Forms and validation | React Hook Form + Zod | Zod schemas shared with the workshop payload validators |
+| Structured editors | Schema-driven forms (RJSF or custom on Zod) | Skills, mana, avatar trees |
+| Tables | TanStack Table | Review queues, validation reports |
+| Routing | TanStack Router or React Router | |
+| Styling | Tailwind CSS v4 (first-party Vite plugin; uses Lightning CSS internally) | Decided. Build-time CSS only, so the CSP needs no `unsafe-inline` styles |
+| UI components | shadcn/ui (components copied into the repo) | Accessible forms, tables, dialogs, tabs |
+| MUGI client | Shared TypeScript package | HMAC signing and canonical-JSON test vectors shared with the GDScript signer |
+| Unit tests | Vitest | Includes the signing test vectors |
+| End-to-end tests | Playwright | Login, submit, review flows |
+| Hosting | Static build served by nginx | Godot export stays on its own `play.` origin |
 
 ## 3. Proposed architecture
 
@@ -79,6 +109,108 @@ management workflow is working.
    validation in the Godot client and server. One schema set prevents the
    clients drifting.
 
+### Contributor types and agreements
+
+Model two independent dimensions rather than one "user type":
+
+- **Engagement type** — `employee`, `contractor`, or `community`. Stored as an
+  agreement record on the account (type, signed terms version, effective
+  dates, rate card reference). It sets the review tier, the recognition rule,
+  and the legal terms accepted.
+- **Discipline** — `artist`, `audio`, `programmer`, `author`. A capability
+  set that decides which workshops and upload types a contributor may use. One
+  account can hold several.
+
+| | Employee | Contractor | Community player |
+|---|---|---|---|
+| Payment on acceptance | None (salary) | Piece rate by content type and size (later) | None |
+| Recognition | Credit ledger; may inform bonus, stock, or royalty decisions | Credit; optional royalty (later) | Credit; optional royalty (later) |
+| Legal basis | Work for hire | Written IP assignment | Contributor license agreement, age check |
+| Review path | Fast track | Standard | Strictest, with quotas |
+
+Pipeline and UI behavior read the agreement record; nothing branches on
+"employee" in content code. Employees should sign in through the company
+identity provider if one exists, linked to the Nakama account.
+
+**Scope decision:** the first releases provide *recognition only*. Every
+accepted contribution is written to a contribution/credit record (contributor,
+role, work, version, share), and users see it on their dashboard. Piece-rate
+payments and royalty payouts are a later phase because they need legal, tax
+(for example W-9/1099 or local equivalents), and identity review, a payment
+provider, and usage data that MUGI does not have today. Design the credit
+record now so payouts can be computed from it later (including share splits
+between collaborators).
+
+MUGI has no roles, levels, agreements, payments, or royalties today; all of
+that is new data (see the [Phase 0 contract](./phase-0-contract.md)).
+
+### Managers, reviewers, and coverage
+
+- **MUGI manager** is an employee role granted by the Nakama console
+  administrator (proposed: membership of a `mugi_managers` Nakama group).
+- **Reviewers** are nominated by a manager, complete required training, and
+  are then activated. They are assigned per workshop (feature type) and can
+  review only those workshops. They cannot review their own work.
+- **Training** is a set of core and per-workshop modules; eligibility is
+  confirmed only when all required modules are passed.
+- **Coverage:** each workshop needs at least two active reviewers. A coverage
+  report lists reviewers per workshop and alerts managers when a workshop falls
+  below two; managers can pause submissions for it.
+- Details and RPCs are in the [Phase 0 contract](./phase-0-contract.md),
+  section 3.3.
+
+### Contribution types and the asset pipeline
+
+| Type | Feasibility | Core requirements |
+|---|---|---|
+| 2D/3D art | Feasible, but MUGI cannot hold it today | MUGI items are JSON capped at 32 KB and its scanners reject base64 blobs. Add object storage and an upload service. Accept an allowlist of formats (for example glTF/GLB, PNG, WebP); re-encode every upload server-side and strip metadata; enforce polycount, texture size, bone count, and scale limits; parse in sandboxed workers; guard against decompression bombs. |
+| Audio | Feasible | Check format, sample rate, length, loudness, and clipping; verify seamless loop points for environment loops; fingerprint against copyrighted music; require a signed voice release for speech. |
+| Authors | Feasible | Text and data within the item limit. Content policy, lore-consistency checks, text-similarity checks against the corpus, trademark and attribution rules, and AI-use disclosure. |
+| Programmers | Feasible only in a restricted form | See below. |
+
+Uploaded binaries are never distributed as received. The pipeline produces a
+normalized, re-encoded copy; only that copy is published, referenced from the
+MUGI item by object-storage key, size, and digest.
+
+**Programmer contributions.** Arbitrary code cannot be proven safe. Order of
+preference:
+
+1. **Declarative effect data** (recommended): triggers, conditions, and
+   effects composed from whitelisted operations with bounded parameters and
+   power budgets. This covers magic-use impacts and skill triggers and fits
+   MUGI's data-only model.
+2. **A small restricted interpreter** with step, time, and memory limits, only
+   if the data model proves too limiting.
+3. **A metered WASM sandbox**, later still.
+4. **Real GDScript or C#:** employees only, through normal git code review.
+   Never through the submission pipeline.
+
+### Submission gate and validation workers
+
+Every submission passes the same stages in order:
+
+1. **Intake** — authentication, agreement check, quotas, signed request.
+2. **Static validation** — schema, size, format allowlist, MUGI scanners.
+3. **Sanitize** — re-encode and strip assets; reject malformed files.
+4. **Provenance** — duplicate detection (perceptual hash, audio and text
+   fingerprints), similarity checks, originality attestation, AI-use
+   disclosure. These checks are heuristic: they reduce plagiarism risk but
+   cannot guarantee originality, so keep the attestation, source records, and
+   a takedown process.
+5. **Fit check** — a headless Godot worker imports the asset or runs the
+   effect in a deterministic simulation and compares it with the budgets for
+   its intended use (scale, physics, triangle and texture budgets, audio
+   loudness, effect power).
+6. **Human review** — reviewer decision with comments.
+7. **Publish** — signed digest, versioned, with a kill switch and rollback
+   after publication.
+
+Placement constraint: workers read pending items through MUGI's server-only
+RPCs (`http_key`), which MUGI's edge blocks from outside. They therefore run
+inside MUGI's network next to the existing gateway, or the MUGI group exposes a
+narrower authenticated worker interface. Object storage and the upload
+service are not part of MUGI today and need an owner.
+
 ### Trust boundaries
 
 All operations that change server state are authorized and validated
@@ -97,7 +229,7 @@ studio.example.com
   /            -> web app (static SPA)
   /api/mugi/   -> proxy to the external Nakama/MUGI (optional, see below)
   /api/studio/ -> optional studio Go service (payments, uploads)
-play.studio.example.com   (Phase 6)
+play.studio.example.com   (Phase 7)
   /            -> Godot web export (static)
 ```
 
@@ -123,7 +255,7 @@ nginx notes:
   `Cross-Origin-Embedder-Policy: require-corp`. Set them only for the Godot
   origin/location. Serve `.wasm` as `application/wasm`, enable gzip or brotli,
   and cache fingerprinted files for a long time. If embedding the export in an
-  iframe from the studio page, verify cross-origin isolation works in Phase 6,
+  iframe from the studio page, verify cross-origin isolation works in Phase 7,
   or fall back to a single-threaded export. A desktop Godot client is a
   download and is not served by nginx.
 - **CSP per location.** The SPA uses a strict CSP because the HMAC session key
@@ -217,7 +349,7 @@ together on breaking changes):
 | Capability | Proposed behavior |
 |---|---|
 | Account authentication | The current client supports device authentication only. Add the Nakama account login/registration flows required by the README to the web client and, later, to the addon. Do not use a device ID as the creator's identity. |
-| Creator profile | Read/update permitted fields; return verified role, level, VIP, and payment-setup status without exposing payment secrets. |
+| Creator profile | Read/update permitted fields; return verified role, level, VIP, and agreement/engagement type. Payment-setup status is deferred with payments. |
 | Name availability | Check normalized login/display names and reserve them atomically. |
 | Creator projects | Create, list, rename, clone, read, and save private drafts. |
 | Versioning | Create immutable revisions; submit a specific revision; retain prior revisions and review outcomes. |
@@ -259,7 +391,7 @@ the server/database boundary either way.
 | Entity | Important fields and constraints |
 |---|---|
 | Creator profile | Nakama user ID (primary identity), normalized login/display names, multiverse/universe ID, profile fields, eligibility/role references, timestamps. Unique normalized names enforced by atomic reservation. |
-| Creator eligibility | User ID, player/admin/VIP levels, payment setup status and permitted channel metadata, verification status, updated time. No payment credentials in profile reads or logs; use a provider token reference if payments are added. |
+| Creator eligibility | User ID, player/admin/VIP levels, verification status, updated time. Payment setup status and channel metadata are added with the deferred payments phase (never raw payment credentials; use a provider token reference). |
 | Workshop definition | Stable type ID, schema version, enabled flag, required eligibility/flags, validation constraints, template references. Server definitions are authoritative. |
 | Project | Stable ID, owner user ID, universe, workshop type, title, current revision, lifecycle status, timestamps. Owner-scoped access; index owner/status/update time. |
 | Feature revision | Project ID, monotonic version, immutable payload or object-storage reference, schema version, content digest, author, created time. Unique `(project_id, version)`; validate payload and size. |
@@ -268,6 +400,10 @@ the server/database boundary either way.
 | Metrics | Project/revision ID, metric type (views, cost, income), amount/count, currency, time bucket, source. Derived from trusted server events; define attribution and windows first. |
 | Name reservation | Normalized name, scope, owner user ID, state, optional expiry. Atomic writes prevent concurrent claims. |
 | Audit event | Actor, action, resource, version/digest, timestamp, non-secret metadata. Use the MUGI hash-chain ledger where appropriate. |
+| Agreement | User ID, engagement type (employee/contractor/community), disciplines, accepted terms version and time, effective dates, rate card reference (later). Server-authoritative; drives review tier. |
+| Contribution/credit | Contributor, role (artist/audio/programmer/author), project and version, share percentage for collaborators, recorded on approval. Basis for recognition now and royalties later. |
+| Asset | Object-storage key of the normalized copy, original digest, normalized digest, type, size, dimensions/duration, import metadata, owner project and version. Binaries live in object storage, not in MUGI items. |
+| Validation report | Submission and version, stage results (static, provenance, fit check), measured values vs. budgets, findings, worker version, timestamp. Kept with the review history. |
 
 ### Behavior and operations
 
@@ -299,7 +435,8 @@ Phases are ordered by dependency; each ends with a demonstrable increment.
 - Confirm the external Nakama/MUGI endpoint, its release/tagging process,
   protocol-compatibility window, and CORS/allowlist arrangements; decide direct
   vs proxied access (including edge rate limiting behind a proxy).
-- Agree with the MUGI group how reviewer and admin roles are stored and how the
+- Agree with the MUGI group how the manager role (Nakama group), reviewer state,
+  and admin levels are stored and how the
   review decision RPC is exposed without an `http_key` (see the Phase 0
   contract).
 - Choose the web stack and agree on RPC shapes, authorization, and error
@@ -310,7 +447,8 @@ deployment decision.
 
 ### Phase 1 — Web foundation, authentication, and TypeScript MUGI client
 
-- Set up the web project, navigation, environments, CI, and the docker-compose
+- Set up the web project (React + TypeScript + Vite, see "Web technology
+  choices"), navigation, environments, CI, and the docker-compose
   stack (nginx with TLS, CSP, routing, and the MUGI proxy).
 - Implement the startup `mugi.ping` protocol check, the "update required" UI
   state, and the pinned, test-gated CI update pipeline for MUGI code.
@@ -327,9 +465,12 @@ profile; signed calls verify against the server.
 ### Phase 2 — Profiles, eligibility, and workshop access
 
 - Profile editing and verified eligibility display.
+- Agreement records (engagement type, terms version, disciplines) with
+  acceptance flow and legal text supplied by the business.
 - Server-authoritative feature flags and workshop catalog/schema retrieval.
 - Gate the UI by flags while the backend enforces access again.
-- Privacy-safe payment-setup state and role visibility.
+- Role visibility. The README's payment form and channel display is deferred
+  with payments.
 
 **Exit:** creators see only permitted workshops and why others are unavailable;
 tampered client state grants no server access.
@@ -347,29 +488,53 @@ tampered client state grants no server access.
 ### Phase 4 — Submission, versioning, review, and comments
 
 - Immutable revisions, submission of a specific revision, review history.
-- Reviewer queue and decisions; changes-requested state if confirmed in
-  Phase 0.
-- Reviewer queue and decisions through the role-checked, signed
+- Reviewer queue scoped to each reviewer's assigned workshops, and decisions
+  through the role-checked, signed
   `mugi.studio_review_decide` RPC (a MUGI change); reuse the MUGI gateway
   scanners as a first stage before human review.
+- Reviewer administration for managers: nomination, workshop assignment,
+  training tracking, and the coverage report (at least two active reviewers per
+  workshop).
 - Comments and dashboard notifications; audit events for every decision.
+- Write a contribution/credit record when a revision is approved (recognition
+  only; no payments).
 
 **Exit:** a revision can be submitted, reviewed, and discussed; a later edit
-creates a new revision without changing the prior outcome.
+creates a new revision without changing the prior outcome; approved work
+appears in the contributor's credit list.
 
-### Phase 5 — Metrics and workshop expansion
+### Phase 5 — Asset pipeline and validation gate
 
-- Trusted views/cost/income aggregation and dashboards.
+- Provision object storage and the upload service (signed uploads, size and
+  quota limits, format allowlist, sandboxed parsing, re-encoding).
+- Build the validation workers: static scanners, provenance checks (hashes,
+  fingerprints, similarity), and the headless Godot fit-check worker with
+  per-use budgets for scale, physics, polycount, textures, audio loudness,
+  and effect power.
+- Define the declarative effect-data schema and the deterministic simulation
+  harness; keep real code out of the pipeline.
+- Add web previews (images, glTF, audio) and validation reports in the review
+  UI.
+- Agree with the MUGI group where workers run and how they reach pending
+  items (see the Phase 0 contract).
+- Add post-publication kill switch and rollback.
+
+**Exit:** an artist, audio, author, and effect submission each pass through
+the gate; malformed, oversized, over-budget, and duplicate submissions are
+rejected with clear reports.
+
+### Phase 6 — Metrics and workshop expansion
+
+- Trusted views aggregation and recognition dashboards (cost and income are
+  deferred with payments).
 - Expand schema-driven editors to the remaining README categories: dungeons,
   pocket universes, mana and skill trees, sovereign/avatar and job trees,
   creatures, and skills (including VIP-restricted variants).
-- Add object-storage handling if content exceeds the item limit.
-- Resubmission pricing rules based on edit size, once defined.
 
 **Exit:** server-derived metrics are shown, and planned workshop families are
 available with versioned schemas.
 
-### Phase 6 — Godot preview, playtest, and visual editors
+### Phase 7 — Godot preview, playtest, and visual editors
 
 - Extend the MUGI addon with the account-auth, project, and revision RPCs
   needed by Godot.
@@ -387,7 +552,7 @@ available with versioned schemas.
 **Exit:** a creator can open a project from the web app, preview or playtest it
 in Godot, and return saved changes as a new validated revision.
 
-### Phase 7 — Hardening and release
+### Phase 8 — Hardening and release
 
 - Test permissions, ownership, name-claim races, malformed/oversized payloads,
   signature failures, replay rejection, clock drift, and protocol mismatches
@@ -401,6 +566,18 @@ in Godot, and return saved changes as a new validated revision.
 **Exit:** release checklist, recovery drill, compatibility policy, and
 operational ownership approved.
 
+### Later — Payments and royalties
+
+Not scheduled. Start only after legal, tax, and payment-provider decisions.
+
+- Contractor piece-rate payouts from rate cards on approval, with holdback
+  and reversal on takedown.
+- Royalty calculation from the credit record and trusted usage data, with
+  collaborator splits.
+- Tax and identity collection through the provider, payout reporting, and an
+  audit trail; employees stay on salary with recognition only.
+- Cost, income, and resubmission pricing in the metrics views.
+
 ## 7. Key risks and decisions
 
 - **Two clients:** the web app and Godot must share schemas and the MUGI
@@ -410,8 +587,20 @@ operational ownership approved.
   README requires named accounts. Resolve in Phase 1.
 - **Name uniqueness scope:** decide global vs per-multiverse and enforce
   atomically.
-- **Payments:** decide whether the studio only displays setup status or
-  initiates payments. Prefer provider-hosted, tokenized flows.
+- **Payments:** deferred. Recognition only for now; when payouts are added,
+  prefer provider-hosted, tokenized flows and finish legal and tax review
+  first.
+- **Legal terms:** employee work-for-hire, contractor IP assignment, and a
+  community contributor license must be written and versioned before
+  accepting submissions; users accept the current version.
+- **Plagiarism and provenance:** detection is heuristic. Rely on attestation,
+  source records, similarity checks, and a takedown and rollback process
+  rather than promising originality.
+- **Programmer submissions:** only restricted, declarative effect data goes
+  through the pipeline; real code stays in employee-reviewed git.
+- **Asset storage and workers:** MUGI has no object storage or binary
+  pipeline, and validation workers must sit inside MUGI's network. Needs an
+  owner and design with the MUGI group.
 - **Review lifecycle:** MUGI documents pending/approved/rejected; decide on a
   distinct changes-requested state and resubmission history.
 - **Content size and safety:** items are data-only and capped at 32 KB today;
@@ -419,7 +608,7 @@ operational ownership approved.
 - **Web signing key handling:** the HMAC session key must stay in memory and
   expire with the session; protect against XSS with a strict CSP.
 - **Godot embedding:** a web export has size, threading, and input limits;
-  decide in Phase 6 between embedded export and launched desktop client.
+  decide in Phase 7 between embedded export and launched desktop client.
 - **External MUGI dependency:** availability, protocol changes, and CORS are
   controlled by another team. Agree on a compatibility window and release
   notifications, and degrade gracefully when the backend is unreachable.
